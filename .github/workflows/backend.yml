@@ -1,0 +1,71 @@
+name: Backend
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create development configuration
+        run: python3 scripts/init_env.py
+      - name: Run API and MongoDB integration tests
+        run: docker compose --profile test run --build --rm tests
+      - name: Lint
+        run: docker compose --profile test run --rm --no-deps tests ruff check --no-cache .
+      - name: Collector tests
+        run: python3 -m unittest discover -s collectors/tests -v
+      - name: Collector lint
+        run: docker compose --profile test run --rm --no-deps tests ruff check --no-cache /workspace/collectors
+      - name: Collector formatting
+        run: docker compose --profile test run --rm --no-deps tests ruff format --check --no-cache /workspace/collectors
+      - name: Operations script lint
+        run: docker compose --profile test run --rm --no-deps tests ruff check --no-cache /workspace/scripts
+      - name: Operations script formatting
+        run: docker compose --profile test run --rm --no-deps tests ruff format --check --no-cache /workspace/scripts
+      - name: Check formatting
+        run: docker compose --profile test run --rm --no-deps tests ruff format --check --no-cache .
+      - name: Stop CI services
+        if: always()
+        run: docker compose down
+  hardened-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize isolated deployment secrets
+        run: python3 scripts/init_deployment.py
+      - name: Start authenticated MongoDB and HTTPS API
+        run: docker compose -f deploy/compose.yml up --build -d --wait
+      - name: Create local administrator
+        run: python3 scripts/bootstrap_admin.py --deployment
+      - name: Export public local CA certificate
+        run: docker compose -f deploy/compose.yml cp caddy:/data/caddy/pki/authorities/local/root.crt .local/deployment-ca.crt
+      - name: Verify TLS, six detections, roles, workflows and endpoint keys
+        run: python3 scripts/backend_smoke.py --deployment
+      - name: Verify database backup and isolated restore
+        run: python3 scripts/backup_database.py --deployment --verify-restore
+      - name: Stop isolated CI services
+        if: always()
+        run: docker compose -f deploy/compose.yml down
+  windows-collector:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install native Event Log extension
+        run: python -m pip install -r collectors/windows/requirements.txt
+      - name: Run collector tests and native Application log smoke check
+        run: python -m unittest discover -s collectors/tests -v

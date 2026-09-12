@@ -1,0 +1,30 @@
+{
+    admin off
+    auto_https off
+    persist_config off
+}
+
+:8080 {
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+        -Server
+    }
+    respond /health "ok" 200
+    handle /api/* {
+        reverse_proxy backend:8000 {
+            header_up Host localhost
+        }
+    }
+    handle {
+        root * /srv
+        @assets path /assets/*
+        header @assets Cache-Control "public, max-age=31536000, immutable"
+        @pages not path /assets/*
+        header @pages Cache-Control "no-cache"
+        try_files {path} /index.html
+        file_server
+    }
+}

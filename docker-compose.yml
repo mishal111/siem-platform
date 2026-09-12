@@ -1,0 +1,108 @@
+name: siem
+
+services:
+  mongodb:
+    image: mongo:7.0
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "quit(db.adminCommand('ping').ok ? 0 : 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      target: base
+    environment: &backend_environment
+      MONGO_URI: mongodb://mongodb:27017
+      MONGO_DB: ${MONGO_DB:-siem}
+      COLLECTOR_API_KEY: ${COLLECTOR_API_KEY:?Run python3 scripts/init_env.py first}
+      ANALYST_API_KEY: ${ANALYST_API_KEY:?Run python3 scripts/init_env.py first}
+      CORS_ORIGINS: ${CORS_ORIGINS:-[]}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-1048576}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      ALLOW_LEGACY_KEYS: ${ALLOW_LEGACY_KEYS:-true}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-["localhost","127.0.0.1","testserver"]}
+      SESSION_HOURS: ${SESSION_HOURS:-8}
+      LOGIN_USER_ATTEMPTS: ${LOGIN_USER_ATTEMPTS:-10}
+      LOGIN_PEER_ATTEMPTS: ${LOGIN_PEER_ATTEMPTS:-30}
+      REQUESTS_PER_MINUTE: ${REQUESTS_PER_MINUTE:-6000}
+      MAX_CONCURRENT_REQUESTS: ${MAX_CONCURRENT_REQUESTS:-100}
+      REQUEST_BODY_TIMEOUT_SECONDS: ${REQUEST_BODY_TIMEOUT_SECONDS:-10}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=4)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./backend
+      target: base
+    command: ["python", "-m", "app.detections.worker"]
+    environment:
+      <<: *backend_environment
+      DETECTION_POLL_SECONDS: ${DETECTION_POLL_SECONDS:-1}
+      DETECTION_MAX_LATENESS_SECONDS: ${DETECTION_MAX_LATENESS_SECONDS:-86400}
+      DETECTION_FUTURE_SKEW_SECONDS: ${DETECTION_FUTURE_SKEW_SECONDS:-120}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.detections.worker", "--health-check"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    profiles: ["frontend"]
+    build: ./frontend
+    ports:
+      - "127.0.0.1:5173:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./backend
+      target: test
+    environment:
+      TEST_MONGO_URI: mongodb://mongodb:27017
+      PYTHONPATH: /workspace
+    volumes:
+      - ./backend:/app
+      - ./collectors:/workspace/collectors
+      - ./scripts:/workspace/scripts
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongo_data:

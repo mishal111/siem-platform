@@ -1,0 +1,42 @@
+{
+    admin off
+    skip_install_trust
+    servers {
+        timeouts {
+            read_header 10s
+            read_body 15s
+            write 30s
+            idle 30s
+        }
+    }
+}
+
+http://127.0.0.1:2018 {
+    handle /health {
+        rewrite * /api/v1/health/ready
+        reverse_proxy backend:8000
+    }
+}
+
+http://{$SIEM_DOMAIN} {
+    redir https://{$SIEM_DOMAIN}:{$SIEM_PUBLIC_HTTPS_PORT}{uri} 308
+}
+
+https://{$SIEM_DOMAIN} {
+    request_body {
+        max_size 1MB
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        X-Frame-Options DENY
+        -Server
+    }
+    reverse_proxy backend:8000 {
+        transport http {
+            dial_timeout 3s
+            response_header_timeout 20s
+        }
+    }
+}
